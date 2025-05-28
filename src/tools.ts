@@ -16,6 +16,7 @@
 
 import common from './tools/common.js';
 import console from './tools/console.js';
+import dataAccess from './tools/data-access.js';
 import dialogs from './tools/dialogs.js';
 import extraction from './tools/extraction.js';
 import files from './tools/files.js';
@@ -38,6 +39,7 @@ import type { Tool } from './tools/tool.js';
 export const snapshotTools: Tool<any>[] = [
   ...common(true),
   ...console,
+  ...dataAccess,
   ...dialogs(true),
   ...extraction,
   ...files(true),
@@ -58,6 +60,7 @@ export const snapshotTools: Tool<any>[] = [
 export const visionTools: Tool<any>[] = [
   ...common(false),
   ...console,
+  ...dataAccess,
   ...dialogs(false),
   ...extraction,
   ...files(false),

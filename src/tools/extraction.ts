@@ -15,8 +15,11 @@
  */
 
 import { z } from 'zod';
+import crypto from 'crypto';
 import { defineTool } from './tool.js';
 import { callOnPageNoTrace } from './utils.js';
+import { getDatabaseManager } from '../database.js';
+import { TokenTracker } from '../tokenTracker.js';
 
 interface ExtractionParams {
   selectors?: Record<string, string>;
@@ -33,7 +36,7 @@ interface ExtractionParams {
 const extractDataSchema = z.object({
   selectors: z.record(z.string()).optional().describe('CSS selectors mapped to data keys (e.g., {"title": "h1", "prices": ".price"})'),
   javascript: z.string().optional().describe('Custom JavaScript code for complex extraction. Should return an object with the extracted data.'),
-  format: z.enum(['json', 'csv', 'text']).default('json').describe('Output format for the extracted data'),
+  jobName: z.string().optional().describe('Optional name for the extraction job'),
   options: z.object({
     includeAttributes: z.boolean().default(false).describe('Include element attributes in the extraction'),
     includeStyles: z.boolean().default(false).describe('Include computed styles in the extraction'),
@@ -48,13 +51,15 @@ const extractData = defineTool({
   schema: {
     name: 'browser_extract_data',
     title: 'Extract data from page',
-    description: 'Extract specific data from the current page using CSS selectors or custom JavaScript. Much more token-efficient than full page snapshots.',
+    description: 'Extract specific data from the current page using CSS selectors or custom JavaScript. Data is automatically saved to database and only job summary is returned to prevent conversation bloat.',
     inputSchema: extractDataSchema,
     type: 'readOnly',
   },
 
   handle: async (context, params) => {
     const tab = context.currentTabOrDie();
+    const tokenTracker = new TokenTracker();
+    const dbManager = getDatabaseManager();
     
     // Validate that at least one extraction method is provided
     if (!params.selectors && !params.javascript) {
@@ -64,6 +69,7 @@ const extractData = defineTool({
     const code: string[] = [];
     
     try {
+      const url = await tab.page.url();
       const extractedData = await callOnPageNoTrace(tab.page, async (page) => {
         return await page.evaluate(async (extractionParams: ExtractionParams) => {
           const { selectors, javascript, options } = extractionParams;
@@ -116,7 +122,8 @@ const extractData = defineTool({
                     } else {
                       return cleanText(el.textContent);
                     }
-                  });
+                  })
+                  .filter(item => item && (typeof item === 'string' ? item !== '' : item.text !== ''));
 
                 // If only one element, return it directly instead of array
                 result[key] = extractedElements.length === 1 ? extractedElements[0] : extractedElements;
@@ -150,22 +157,6 @@ const extractData = defineTool({
         }, { selectors: params.selectors, javascript: params.javascript, options: params.options });
       });
 
-      // Format the output based on the requested format
-      let formattedOutput: string;
-      
-      switch (params.format) {
-        case 'csv':
-          formattedOutput = formatAsCSV(extractedData);
-          break;
-        case 'text':
-          formattedOutput = formatAsText(extractedData);
-          break;
-        case 'json':
-        default:
-          formattedOutput = JSON.stringify(extractedData, null, 2);
-          break;
-      }
-
       // Generate code representation
       if (params.selectors) {
         code.push('// Extract data using CSS selectors');
@@ -181,14 +172,127 @@ const extractData = defineTool({
         code.push(`});`);
       }
 
+      // MANDATORY DATABASE STORAGE - No legacy fallback allowed
+      // Create extraction job
+      const strategyHash = crypto.createHash('md5').update(JSON.stringify({
+        selectors: params.selectors,
+        javascript: params.javascript,
+        options: params.options
+      })).digest('hex');
+
+      const jobId = await dbManager.createCrawlJob({
+        url,
+        strategy_hash: strategyHash,
+        status: 'running',
+        total_pages: 1,
+        total_items: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
+      });
+
+      // Count total items extracted
+      let totalItems = 0;
+      const itemCounts: Record<string, number> = {};
+      
+      for (const [key, value] of Object.entries(extractedData)) {
+        if (Array.isArray(value)) {
+          itemCounts[key] = value.length;
+          totalItems += value.length;
+        } else if (value && typeof value === 'object' && !(value as any).error) {
+          itemCounts[key] = 1;
+          totalItems += 1;
+        } else if (typeof value === 'string' && value !== '') {
+          itemCounts[key] = 1;
+          totalItems += 1;
+        }
+      }
+
+      // Store extraction results in database
+      await dbManager.storeCrawlResult({
+        job_id: jobId,
+        page_number: 1,
+        extracted_data: extractedData,
+        metadata: {
+          url,
+          timestamp: new Date().toISOString(),
+          job_name: params.jobName,
+          selectors: params.selectors,
+          javascript: params.javascript,
+          options: params.options,
+          item_counts: itemCounts
+        }
+      });
+
+      // Track token usage
+      const tokenUsage = tokenTracker.trackAction(params, extractedData);
+
+      // Update job status
+      await dbManager.updateCrawlJob(jobId, {
+        status: 'completed',
+        completed_at: new Date(),
+        total_pages: 1,
+        total_items: totalItems,
+        input_tokens: tokenUsage.inputTokens,
+        output_tokens: tokenUsage.outputTokens,
+        total_tokens: tokenUsage.totalTokens
+      });
+
+      // Create sample data for preview (first few items)
+      const sampleData: any = {};
+      for (const [key, value] of Object.entries(extractedData)) {
+        if (Array.isArray(value)) {
+          sampleData[key] = value.slice(0, 3); // Show first 3 items
+          if (value.length > 3) {
+            sampleData[key].push(`... and ${value.length - 3} more items`);
+          }
+        } else {
+          sampleData[key] = value;
+        }
+      }
+
+      // ALWAYS return job summary - never return full data
       return {
         resultOverride: {
           content: [{
             type: 'text',
-            text: `# Extracted Data (${params.format.toUpperCase()} format)\n\n\`\`\`${params.format === 'json' ? 'json' : 'text'}\n${formattedOutput}\n\`\`\``
+            text: `# Data Extraction Job Completed ✅
+
+**Job ID:** ${jobId}
+**Job Name:** ${params.jobName || 'Unnamed Extraction'}
+**URL:** ${url}
+**Status:** Completed
+
+## Extraction Summary
+- **Total Items Extracted:** ${totalItems.toLocaleString()}
+- **Data Fields:** ${Object.keys(extractedData).length}
+- **Storage:** PostgreSQL Database
+
+## Item Breakdown
+${Object.entries(itemCounts).map(([key, count]) => `- **${key}:** ${count.toLocaleString()} items`).join('\n')}
+
+## Sample Data Preview
+\`\`\`json
+${JSON.stringify(sampleData, null, 2)}
+\`\`\`
+
+## Data Access
+- **Full data stored in database** - Use \`get_crawl_results(${jobId})\` to retrieve
+- **Export options available** - Use \`export_crawl_data(${jobId}, format="csv")\` to export
+
+## Token Usage
+${tokenTracker.formatUsageReport(tokenUsage)}
+
+*Note: All extracted data is automatically saved to database to prevent conversation bloat. This summary uses minimal tokens while preserving all extracted data.*`
           }],
         },
-        code,
+        code: [
+          ...code,
+          `// Data extraction completed`,
+          `// Job ID: ${jobId}`,
+          `// Total items: ${totalItems}`,
+          `// Data stored in PostgreSQL database`
+        ],
         captureSnapshot: false,
         waitForNetwork: false,
       };
@@ -199,7 +303,7 @@ const extractData = defineTool({
         resultOverride: {
           content: [{
             type: 'text',
-            text: `# Extraction Error\n\nFailed to extract data: ${errorMessage}`
+            text: `# Extraction Error\n\nFailed to extract data: ${errorMessage}\n\n*Note: Database storage is mandatory. If database is unavailable, extraction cannot proceed.*`
           }],
         },
         code: [`// Error: ${errorMessage}`],
@@ -209,53 +313,6 @@ const extractData = defineTool({
     }
   },
 });
-
-// Helper function to format data as CSV
-function formatAsCSV(data: any): string {
-  if (typeof data !== 'object' || data === null) {
-    return String(data);
-  }
-
-  const rows: string[] = [];
-  const headers = Object.keys(data);
-  rows.push(headers.join(','));
-
-  // Find the maximum length of arrays in the data
-  const maxLength = Math.max(...headers.map(key => 
-    Array.isArray(data[key]) ? data[key].length : 1
-  ));
-
-  for (let i = 0; i < maxLength; i++) {
-    const row = headers.map(key => {
-      const value = Array.isArray(data[key]) ? data[key][i] : (i === 0 ? data[key] : '');
-      return typeof value === 'string' ? `"${value.replace(/"/g, '""')}"` : String(value || '');
-    });
-    rows.push(row.join(','));
-  }
-
-  return rows.join('\n');
-}
-
-// Helper function to format data as plain text
-function formatAsText(data: any): string {
-  if (typeof data !== 'object' || data === null) {
-    return String(data);
-  }
-
-  const lines: string[] = [];
-  for (const [key, value] of Object.entries(data)) {
-    lines.push(`${key}:`);
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
-        lines.push(`  ${index + 1}. ${typeof item === 'object' ? JSON.stringify(item) : item}`);
-      });
-    } else {
-      lines.push(`  ${typeof value === 'object' ? JSON.stringify(value) : value}`);
-    }
-    lines.push('');
-  }
-  return lines.join('\n');
-}
 
 export default [
   extractData,

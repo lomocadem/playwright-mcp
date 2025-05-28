@@ -154,6 +154,16 @@ export type Config = {
      * Whether to truncate large responses in conversation.
      */
     truncateLargeResponses?: boolean;
+
+    /**
+     * Response verbosity level: 'quiet', 'normal', or 'verbose'.
+     */
+    verbosity?: 'quiet' | 'normal' | 'verbose';
+
+    /**
+     * Numeric verbosity level (1-5, where 1 is minimal and 5 is maximum detail).
+     */
+    verbosityLevel?: number;
   };
 
   /**

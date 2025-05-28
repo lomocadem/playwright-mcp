@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { defineTool, type ToolFactory } from './tool.js';
+import { PageSummarizer } from '../pageSummarizer.js';
 
 const navigate: ToolFactory = captureSnapshot => defineTool({
   capability: 'core',
@@ -38,6 +39,34 @@ const navigate: ToolFactory = captureSnapshot => defineTool({
       `// Navigate to ${params.url}`,
       `await page.goto('${params.url}');`,
     ];
+
+    // Use smart summarization for navigation responses
+    const verbosity = context.config.responseManagement?.verbosity || 'normal';
+    const shouldUseSummary = verbosity === 'quiet' || verbosity === 'normal';
+
+    if (shouldUseSummary && !captureSnapshot) {
+      // Use smart page summarization instead of full snapshot
+      const summarizer = new PageSummarizer(context.config);
+      try {
+        const summary = await summarizer.summarizePage(tab.page);
+        const summaryText = summarizer.formatForResponse(summary);
+        
+        return {
+          code,
+          captureSnapshot: false,
+          waitForNetwork: false,
+          resultOverride: {
+            content: [{
+              type: 'text',
+              text: `# Navigation Complete ✅\n\n**URL:** ${params.url}\n\n${summaryText}`
+            }]
+          }
+        };
+      } catch (error) {
+        // Fallback to regular snapshot if summarization fails
+        console.warn('Page summarization failed, falling back to snapshot:', error);
+      }
+    }
 
     return {
       code,

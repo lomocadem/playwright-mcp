@@ -42,6 +42,7 @@ export type CLIOptions = {
   maxResponseSize?: number;
   sandbox: boolean;
   outputDir?: string;
+  useTmp?: boolean;
   port?: number;
   proxyBypass?: string;
   proxyServer?: string;
@@ -54,6 +55,9 @@ export type CLIOptions = {
   userDataDir?: string;
   viewportSize?: string;
   vision?: boolean;
+  quiet?: boolean;
+  verbose?: boolean;
+  verbosityLevel?: number;
 };
 
 const defaultConfig: FullConfig = {
@@ -87,7 +91,7 @@ const defaultConfig: FullConfig = {
       password: process.env.POSTGRES_PASSWORD || 'postgres',
     },
   },
-  outputDir: path.join(os.tmpdir(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
+  outputDir: process.cwd(), // Default to current working directory instead of tmp
 };
 
 type BrowserUserConfig = NonNullable<Config['browser']>;
@@ -187,6 +191,17 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
   if (cliOptions.blockServiceWorkers)
     contextOptions.serviceWorkers = 'block';
 
+  // Determine output directory
+  let outputDir: string | undefined;
+  if (cliOptions.useTmp) {
+    // Use tmp directory if explicitly requested
+    outputDir = path.join(os.tmpdir(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString()));
+  } else if (cliOptions.outputDir) {
+    // Use user-specified directory
+    outputDir = path.resolve(cliOptions.outputDir);
+  }
+  // Otherwise use default (current working directory)
+
   const result: Config = {
     browser: {
       browserName,
@@ -207,7 +222,7 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
       blockedOrigins: cliOptions.blockedOrigins,
     },
     saveTrace: cliOptions.saveTrace,
-    outputDir: cliOptions.outputDir,
+    outputDir,
     imageResponses: cliOptions.imageResponses,
     tokenTracking: {
       enabled: !!cliOptions.showTokens,
@@ -217,6 +232,8 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
       maxResponseSize: cliOptions.maxResponseSize || 10000,
       saveToFiles: !!cliOptions.saveResponses,
       truncateLargeResponses: !!cliOptions.truncateResponses,
+      verbosity: cliOptions.quiet ? 'quiet' : cliOptions.verbose ? 'verbose' : 'normal',
+      verbosityLevel: cliOptions.verbosityLevel || 1,
     },
   };
 

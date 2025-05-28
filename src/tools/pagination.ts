@@ -15,8 +15,11 @@
  */
 
 import { z } from 'zod';
+import crypto from 'crypto';
 import { defineTool } from './tool.js';
 import { callOnPageNoTrace } from './utils.js';
+import { getDatabaseManager } from '../database.js';
+import { TokenTracker } from '../tokenTracker.js';
 
 interface PaginationParams {
   selectors: Record<string, string>;
@@ -48,7 +51,7 @@ const extractPaginatedDataSchema = z.object({
     scrollToLoad: z.boolean().default(false).describe('Scroll to bottom before extracting data (for lazy loading)'),
     infiniteScroll: z.boolean().default(false).describe('Handle infinite scroll pagination')
   }).describe('Pagination configuration'),
-  format: z.enum(['json', 'csv', 'text']).default('json').describe('Output format for the extracted data'),
+  jobName: z.string().optional().describe('Optional name for the extraction job'),
   options: z.object({
     includeAttributes: z.boolean().default(false).describe('Include element attributes in the extraction'),
     includeStyles: z.boolean().default(false).describe('Include computed styles in the extraction'),
@@ -64,27 +67,45 @@ const extractPaginatedData = defineTool({
   schema: {
     name: 'browser_extract_paginated_data',
     title: 'Extract data from multiple pages',
-    description: 'Extract data from multiple pages by automatically handling pagination. Supports button-based pagination, infinite scroll, and URL-based navigation.',
+    description: 'Extract data from multiple pages by automatically handling pagination. Data is saved to database and only job summary is returned to prevent conversation bloat.',
     inputSchema: extractPaginatedDataSchema,
     type: 'readOnly',
   },
 
   handle: async (context, params) => {
     const tab = context.currentTabOrDie();
+    const tokenTracker = new TokenTracker();
+    const dbManager = getDatabaseManager();
     const code: string[] = [];
     
     try {
+      const url = await tab.page.url();
+      
+      // Create extraction job
+      const strategyHash = crypto.createHash('md5').update(JSON.stringify({
+        selectors: params.selectors,
+        paginationConfig: params.paginationConfig,
+        options: params.options
+      })).digest('hex');
+
+      const jobId = await dbManager.createCrawlJob({
+        url,
+        strategy_hash: strategyHash,
+        status: 'running',
+        total_pages: 0,
+        total_items: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0
+      });
+
       const allExtractedData = await callOnPageNoTrace(tab.page, async (page) => {
         return await page.evaluate(async (paginationParams: PaginationParams) => {
           const { selectors, paginationConfig, options } = paginationParams;
-          const allResults: any = {};
+          const allPageResults: any[] = [];
           let currentPage = 1;
           const seenItems = new Set<string>();
-
-          // Initialize result structure
-          Object.keys(selectors).forEach(key => {
-            allResults[key] = [];
-          });
+          let totalItems = 0;
 
           // Helper function to clean text
           const cleanText = (text: string | null | undefined): string => {
@@ -146,7 +167,7 @@ const extractPaginatedData = defineTool({
                       return cleanText(el.textContent);
                     }
                   })
-                  .filter(item => item && item !== ''); // Remove empty items
+                  .filter(item => item && (typeof item === 'string' ? item !== '' : item.text !== ''));
 
                 pageResults[key] = extractedElements;
               } catch (error) {
@@ -183,12 +204,11 @@ const extractPaginatedData = defineTool({
             // Common next button selectors
             const commonSelectors = [
               'a[aria-label="Next"]',
+              'button[aria-label="Next"]',
               '.s-pagination-next',
               '.pagnNext',
               '.next',
               '[data-testid="pagination-next"]',
-              'a:contains("Next")',
-              'button:contains("Next")',
               '.pagination .next',
               '.page-next'
             ];
@@ -222,26 +242,42 @@ const extractPaginatedData = defineTool({
 
             // Extract data from current page
             const pageData = extractCurrentPageData();
-
-            // Merge data with deduplication if enabled
+            
+            // Count items on this page
+            let pageItemCount = 0;
+            const processedPageData: any = {};
+            
             for (const [key, items] of Object.entries(pageData)) {
               if (Array.isArray(items)) {
+                const filteredItems = [];
                 for (const item of items) {
                   if (options.deduplication) {
                     const itemId = createItemId(item);
                     if (!seenItems.has(itemId)) {
                       seenItems.add(itemId);
-                      allResults[key].push(item);
+                      filteredItems.push(item);
+                      pageItemCount++;
                     }
                   } else {
-                    allResults[key].push(item);
+                    filteredItems.push(item);
+                    pageItemCount++;
                   }
                 }
+                processedPageData[key] = filteredItems;
               } else {
-                // Handle error objects
-                allResults[key] = items;
+                processedPageData[key] = items;
               }
             }
+
+            // Store page results
+            allPageResults.push({
+              page: currentPage,
+              data: processedPageData,
+              itemCount: pageItemCount,
+              timestamp: new Date().toISOString()
+            });
+
+            totalItems += pageItemCount;
 
             // Break if infinite scroll (we've already loaded all content)
             if (paginationConfig.infiniteScroll) {
@@ -282,36 +318,49 @@ const extractPaginatedData = defineTool({
             currentPage++;
           }
 
-          // Add metadata
-          allResults._metadata = {
+          return {
+            pageResults: allPageResults,
             totalPages: currentPage - 1,
-            extractionTimestamp: new Date().toISOString(),
-            totalItems: Object.values(allResults).reduce((sum: number, items: any) => {
-              return sum + (Array.isArray(items) ? items.length : 0);
-            }, 0),
-            deduplicationEnabled: options.deduplication,
-            uniqueItemsSeen: seenItems.size
+            totalItems,
+            uniqueItemsSeen: seenItems.size,
+            deduplicationEnabled: options.deduplication
           };
-
-          return allResults;
         }, { selectors: params.selectors, paginationConfig: params.paginationConfig, options: params.options });
       });
 
-      // Format the output based on the requested format
-      let formattedOutput: string;
-      
-      switch (params.format) {
-        case 'csv':
-          formattedOutput = formatPaginatedAsCSV(allExtractedData);
-          break;
-        case 'text':
-          formattedOutput = formatPaginatedAsText(allExtractedData);
-          break;
-        case 'json':
-        default:
-          formattedOutput = JSON.stringify(allExtractedData, null, 2);
-          break;
+      // Store each page's results in the database
+      for (const pageResult of allExtractedData.pageResults) {
+        await dbManager.storeCrawlResult({
+          job_id: jobId,
+          page_number: pageResult.page,
+          extracted_data: pageResult.data,
+          metadata: {
+            url,
+            timestamp: pageResult.timestamp,
+            job_name: params.jobName,
+            item_count: pageResult.itemCount,
+            selectors: params.selectors,
+            pagination_config: params.paginationConfig,
+            options: params.options
+          }
+        });
       }
+
+      // Track token usage
+      const tokenUsage = tokenTracker.trackAction(params, {
+        summary: `Extracted ${allExtractedData.totalItems} items from ${allExtractedData.totalPages} pages`
+      });
+
+      // Update job status
+      await dbManager.updateCrawlJob(jobId, {
+        status: 'completed',
+        completed_at: new Date(),
+        total_pages: allExtractedData.totalPages,
+        total_items: allExtractedData.totalItems,
+        input_tokens: tokenUsage.inputTokens,
+        output_tokens: tokenUsage.outputTokens,
+        total_tokens: tokenUsage.totalTokens
+      });
 
       // Generate code representation
       code.push('// Extract paginated data');
@@ -337,18 +386,83 @@ const extractPaginatedData = defineTool({
       code.push('  currentPage++;');
       code.push('}');
 
-      const metadata = allExtractedData._metadata || {};
-      const totalItems = metadata.totalItems || 0;
-      const totalPages = metadata.totalPages || 1;
+      // Count items by field
+      const itemCounts: Record<string, number> = {};
+      for (const pageResult of allExtractedData.pageResults) {
+        for (const [key, items] of Object.entries(pageResult.data)) {
+          if (Array.isArray(items)) {
+            itemCounts[key] = (itemCounts[key] || 0) + items.length;
+          }
+        }
+      }
+
+      // Create sample data for preview (first few items from first page)
+      const sampleData: any = {};
+      if (allExtractedData.pageResults.length > 0) {
+        const firstPageData = allExtractedData.pageResults[0].data;
+        for (const [key, value] of Object.entries(firstPageData)) {
+          if (Array.isArray(value)) {
+            sampleData[key] = value.slice(0, 3); // Show first 3 items
+            if (value.length > 3) {
+              sampleData[key].push(`... and ${value.length - 3} more items from this page`);
+            }
+          } else {
+            sampleData[key] = value;
+          }
+        }
+      }
 
       return {
         resultOverride: {
           content: [{
             type: 'text',
-            text: `# Paginated Data Extraction Complete\n\n**📊 Extraction Summary:**\n- **Total Pages Processed:** ${totalPages}\n- **Total Items Extracted:** ${totalItems}\n- **Format:** ${params.format.toUpperCase()}\n- **Deduplication:** ${params.options.deduplication ? 'Enabled' : 'Disabled'}\n\n\`\`\`${params.format === 'json' ? 'json' : 'text'}\n${formattedOutput}\n\`\`\``
+            text: `# Paginated Data Extraction Job Completed ✅
+
+**Job ID:** ${jobId}
+**Job Name:** ${params.jobName || 'Unnamed Pagination Job'}
+**URL:** ${url}
+**Status:** Completed
+
+## Extraction Summary
+- **Total Pages Processed:** ${allExtractedData.totalPages}
+- **Total Items Extracted:** ${allExtractedData.totalItems.toLocaleString()}
+- **Data Fields:** ${Object.keys(params.selectors).length}
+- **Deduplication:** ${allExtractedData.deduplicationEnabled ? 'Enabled' : 'Disabled'}
+- **Unique Items:** ${allExtractedData.uniqueItemsSeen.toLocaleString()}
+- **Storage:** PostgreSQL Database
+
+## Item Breakdown by Field
+${Object.entries(itemCounts).map(([key, count]) => `- **${key}:** ${count.toLocaleString()} items`).join('\n')}
+
+## Pagination Configuration
+- **Max Pages:** ${params.paginationConfig.maxPages}
+- **Wait Between Pages:** ${params.paginationConfig.waitBetweenPages}ms
+- **Scroll to Load:** ${params.paginationConfig.scrollToLoad ? 'Yes' : 'No'}
+- **Infinite Scroll:** ${params.paginationConfig.infiniteScroll ? 'Yes' : 'No'}
+
+## Sample Data Preview (Page 1)
+\`\`\`json
+${JSON.stringify(sampleData, null, 2)}
+\`\`\`
+
+## Data Access
+- **Full data stored in database** - Use \`get_crawl_results(${jobId})\` to retrieve
+- **Export options available** - Use \`export_crawl_data(${jobId}, format="csv")\` to export
+
+## Token Usage
+${tokenTracker.formatUsageReport(tokenUsage)}
+
+*Note: Full paginated data saved to database to prevent conversation bloat. This summary uses minimal tokens while preserving all extracted data.*`
           }],
         },
-        code,
+        code: [
+          ...code,
+          `// Paginated data extraction completed`,
+          `// Job ID: ${jobId}`,
+          `// Pages processed: ${allExtractedData.totalPages}`,
+          `// Total items: ${allExtractedData.totalItems}`,
+          `// Data stored in PostgreSQL database`
+        ],
         captureSnapshot: false,
         waitForNetwork: false,
       };
@@ -369,101 +483,6 @@ const extractPaginatedData = defineTool({
     }
   },
 });
-
-// Helper function to format paginated data as CSV
-function formatPaginatedAsCSV(data: any): string {
-  if (typeof data !== 'object' || data === null) {
-    return String(data);
-  }
-
-  // Remove metadata for CSV formatting
-  const { _metadata, ...cleanData } = data;
-  
-  const rows: string[] = [];
-  const allKeys = Object.keys(cleanData);
-  
-  if (allKeys.length === 0) {
-    return '';
-  }
-
-  // Find the maximum length of arrays in the data
-  const maxLength = Math.max(...allKeys.map(key => 
-    Array.isArray(cleanData[key]) ? cleanData[key].length : 1
-  ));
-
-  // Create headers
-  const headers: string[] = [];
-  allKeys.forEach(key => {
-    if (Array.isArray(cleanData[key]) && cleanData[key].length > 0) {
-      const firstItem = cleanData[key][0];
-      if (typeof firstItem === 'object' && firstItem.text !== undefined) {
-        headers.push(`${key}_text`);
-        if (firstItem.attributes) headers.push(`${key}_attributes`);
-        if (firstItem.styles) headers.push(`${key}_styles`);
-      } else {
-        headers.push(key);
-      }
-    } else {
-      headers.push(key);
-    }
-  });
-
-  rows.push(headers.join(','));
-
-  // Create data rows
-  for (let i = 0; i < maxLength; i++) {
-    const row = headers.map(header => {
-      const baseKey = header.split('_')[0];
-      const property = header.includes('_') ? header.split('_').slice(1).join('_') : null;
-      
-      const value = Array.isArray(cleanData[baseKey]) ? cleanData[baseKey][i] : (i === 0 ? cleanData[baseKey] : '');
-      
-      if (property && typeof value === 'object' && value !== null) {
-        const propValue = property === 'text' ? value.text : value[property];
-        return typeof propValue === 'string' ? `"${propValue.replace(/"/g, '""')}"` : String(propValue || '');
-      }
-      
-      return typeof value === 'string' ? `"${value.replace(/"/g, '""')}"` : String(value || '');
-    });
-    rows.push(row.join(','));
-  }
-
-  return rows.join('\n');
-}
-
-// Helper function to format paginated data as plain text
-function formatPaginatedAsText(data: any): string {
-  if (typeof data !== 'object' || data === null) {
-    return String(data);
-  }
-
-  const { _metadata, ...cleanData } = data;
-  const lines: string[] = [];
-
-  if (_metadata) {
-    lines.push('=== EXTRACTION METADATA ===');
-    lines.push(`Total Pages: ${_metadata.totalPages}`);
-    lines.push(`Total Items: ${_metadata.totalItems}`);
-    lines.push(`Extraction Time: ${_metadata.extractionTimestamp}`);
-    lines.push(`Deduplication: ${_metadata.deduplicationEnabled ? 'Enabled' : 'Disabled'}`);
-    lines.push('');
-  }
-
-  lines.push('=== EXTRACTED DATA ===');
-  for (const [key, value] of Object.entries(cleanData)) {
-    lines.push(`${key.toUpperCase()}:`);
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
-        lines.push(`  ${index + 1}. ${typeof item === 'object' ? JSON.stringify(item) : item}`);
-      });
-    } else {
-      lines.push(`  ${typeof value === 'object' ? JSON.stringify(value) : value}`);
-    }
-    lines.push('');
-  }
-  
-  return lines.join('\n');
-}
 
 export default [
   extractPaginatedData,

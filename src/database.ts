@@ -59,6 +59,13 @@ export interface PageAnalysis {
   timestamp: Date;
 }
 
+export interface CrawlJobsFilter {
+  limit?: number;
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'all';
+  sortBy?: 'created_at' | 'completed_at' | 'total_items';
+  sortOrder?: 'asc' | 'desc';
+}
+
 export class DatabaseManager {
   private redisClient: RedisClientType | null = null;
   private pgPool: pg.Pool | null = null;
@@ -296,6 +303,45 @@ export class DatabaseManager {
     try {
       const result = await client.query('SELECT * FROM crawl_jobs WHERE id = $1', [id]);
       return result.rows[0] || null;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getCrawlJobs(filter: CrawlJobsFilter = {}): Promise<CrawlJob[]> {
+    if (!this.pgPool) {
+      throw new Error('PostgreSQL not connected');
+    }
+
+    const client = await this.pgPool.connect();
+    try {
+      let query = 'SELECT * FROM crawl_jobs';
+      const params: any[] = [];
+      const conditions: string[] = [];
+
+      // Add status filter
+      if (filter.status && filter.status !== 'all') {
+        conditions.push(`status = $${params.length + 1}`);
+        params.push(filter.status);
+      }
+
+      // Add WHERE clause if there are conditions
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      // Add sorting
+      const sortBy = filter.sortBy || 'created_at';
+      const sortOrder = filter.sortOrder || 'desc';
+      query += ` ORDER BY ${sortBy} ${sortOrder.toUpperCase()}`;
+
+      // Add limit
+      const limit = filter.limit || 20;
+      query += ` LIMIT $${params.length + 1}`;
+      params.push(limit);
+
+      const result = await client.query(query, params);
+      return result.rows;
     } finally {
       client.release();
     }
