@@ -23,10 +23,12 @@ import files from './tools/files.js';
 import install from './tools/install.js';
 import intelligentCrawler from './tools/intelligent-crawler.js';
 import keyboard from './tools/keyboard.js';
+import manualBrowserConnector from './tools/manual-browser-connector.js';
 import navigate from './tools/navigate.js';
 import network from './tools/network.js';
 import pagination from './tools/pagination.js';
 import pdf from './tools/pdf.js';
+import shopeeCrawler from './tools/shopee-crawler.js';
 import snapshot from './tools/snapshot.js';
 import tabs from './tools/tabs.js';
 import screenshot from './tools/screenshot.js';
@@ -46,11 +48,13 @@ export const snapshotTools: Tool<any>[] = [
   ...install,
   ...intelligentCrawler,
   ...keyboard(true),
+  ...manualBrowserConnector,
   ...navigate(true),
   ...network,
   ...pagination,
   ...pdf,
   ...screenshot,
+  ...shopeeCrawler,
   ...snapshot,
   ...tabs(true),
   ...testing,
@@ -67,10 +71,12 @@ export const visionTools: Tool<any>[] = [
   ...install,
   ...intelligentCrawler,
   ...keyboard(false),
+  ...manualBrowserConnector,
   ...navigate(false),
   ...network,
   ...pagination,
   ...pdf,
+  ...shopeeCrawler,
   ...tabs(false),
   ...testing,
   ...vision,
