@@ -27,6 +27,7 @@ import { Tab } from './tab.js';
 import { outputFile } from './config.js';
 import { TokenTracker } from './tokenTracker.js';
 import { ResponseManager } from './responseManager.js';
+import { globalErrorHandler, ErrorCategory, ErrorSeverity } from './errorHandler.js';
 
 import type { ImageContent, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import type { ModalState, Tool, ToolActionResult } from './tools/tool.js';
@@ -52,6 +53,8 @@ export class Context {
   private _downloads: { download: playwright.Download, finished: boolean, outputFile: string }[] = [];
   private _tokenTracker: TokenTracker;
   private _responseManager: ResponseManager;
+  private _contextRecoveryAttempts = 0;
+  private _maxContextRecoveryAttempts = 3;
   clientVersion: { name: string; version: string; } | undefined;
 
   constructor(tools: Tool[], config: FullConfig) {
@@ -371,10 +374,23 @@ ${code.join('\n')}
   }
 
   private _onPageCreated(page: playwright.Page) {
-    const tab = new Tab(this, page, tab => this._onPageClosed(tab));
-    this._tabs.push(tab);
-    if (!this._currentTab)
-      this._currentTab = tab;
+    try {
+      const tab = new Tab(this, page, tab => this._onPageClosed(tab));
+      this._tabs.push(tab);
+      if (!this._currentTab)
+        this._currentTab = tab;
+    } catch (error) {
+      const classified = globalErrorHandler.handleError(error as Error, {
+        url: page.url(),
+        additionalData: { 
+          operation: 'page_creation',
+          tabCount: this._tabs.length 
+        }
+      });
+      
+      // Attempt recovery based on error classification
+      this._attemptPageCreationRecovery(page, classified);
+    }
   }
 
   private _onPageClosed(tab: Tab) {
@@ -433,9 +449,20 @@ ${code.join('\n')}
   private async _setupBrowserContext(): Promise<BrowserContextAndBrowser> {
     const { browser, browserContext } = await this._createBrowserContext();
     await this._setupRequestInterception(browserContext);
-    for (const page of browserContext.pages())
+    
+    // Set up global error handling for the browser context
+    this._setupGlobalErrorHandling(browserContext);
+    
+    // Handle existing pages with error protection
+    for (const page of browserContext.pages()) {
       this._onPageCreated(page);
-    browserContext.on('page', page => this._onPageCreated(page));
+    }
+    
+    // Set up page creation listener with enhanced error handling
+    browserContext.on('page', page => {
+      this._handlePageCreationWithRetry(page);
+    });
+    
     if (this.config.saveTrace) {
       await browserContext.tracing.start({
         name: 'trace',
@@ -445,6 +472,189 @@ ${code.join('\n')}
       });
     }
     return { browser, browserContext };
+  }
+
+  /**
+   * Handle page creation with retry logic and error recovery
+   */
+  private _handlePageCreationWithRetry(page: playwright.Page, attempt = 1): void {
+    try {
+      this._onPageCreated(page);
+    } catch (error) {
+      const classified = globalErrorHandler.handleError(error as Error, {
+        url: page.url(),
+        additionalData: { 
+          operation: 'page_creation_retry',
+          attempt,
+          tabCount: this._tabs.length 
+        }
+      });
+
+      // Retry if the error classification suggests it
+      if (globalErrorHandler.shouldRetry(classified, attempt)) {
+        console.warn(`Retrying page creation (attempt ${attempt + 1}/${classified.maxRetries + 1})`);
+        setTimeout(() => {
+          this._handlePageCreationWithRetry(page, attempt + 1);
+        }, 1000 * attempt); // Exponential backoff
+      } else {
+        console.error(`Failed to create tab after ${attempt} attempts, giving up`);
+      }
+    }
+  }
+
+  /**
+   * Attempt recovery strategies for page creation failures
+   */
+  private _attemptPageCreationRecovery(page: playwright.Page, classifiedError: any): void {
+    console.warn(`Attempting page creation recovery for error: ${classifiedError.message}`);
+    
+    switch (classifiedError.recoveryStrategy) {
+      case 'retry_page_creation':
+        // Try creating a minimal tab without full event handler setup
+        try {
+          const tab = new Tab(this, page, tab => this._onPageClosed(tab));
+          // Disable console collection immediately to prevent ElementHandle errors
+          tab.disableConsoleCollection();
+          this._tabs.push(tab);
+          if (!this._currentTab) {
+            this._currentTab = tab;
+          }
+          console.warn(`Created tab with reduced functionality due to errors`);
+        } catch (secondaryError) {
+          globalErrorHandler.handleError(secondaryError as Error, {
+            url: page.url(),
+            additionalData: { 
+              operation: 'page_creation_recovery_failed',
+              originalError: classifiedError.message
+            }
+          });
+        }
+        break;
+        
+      case 'recreate_context':
+        if (this._contextRecoveryAttempts < this._maxContextRecoveryAttempts) {
+          this._contextRecoveryAttempts++;
+          console.warn(`Attempting browser context recovery (attempt ${this._contextRecoveryAttempts}/${this._maxContextRecoveryAttempts})`);
+          // Force context recreation on next access
+          this._browserContextPromise = undefined;
+        } else {
+          console.error('Max context recovery attempts reached, giving up');
+        }
+        break;
+        
+      default:
+        console.warn(`No specific recovery strategy for: ${classifiedError.recoveryStrategy}`);
+        break;
+    }
+  }
+
+  /**
+   * Get error handler metrics for diagnostics
+   */
+  getErrorMetrics(): any {
+    return globalErrorHandler.getMetrics();
+  }
+
+  /**
+   * Get detailed error report for troubleshooting
+   */
+  getErrorReport(): string {
+    return globalErrorHandler.getErrorReport();
+  }
+
+  /**
+   * Enable or disable debug mode for error handling
+   */
+  setErrorDebugMode(enabled: boolean): void {
+    globalErrorHandler.setDebugMode(enabled);
+  }
+
+  /**
+   * Set up global error handling for the browser context to catch low-level errors
+   */
+  private _setupGlobalErrorHandling(browserContext: playwright.BrowserContext): void {
+    // Set up process-level error handling to catch ElementHandle errors
+    const handleUncaughtException = (error: Error) => {
+      if (error.message.includes('ElementHandle can only be created from FrameDispatcher')) {
+        globalErrorHandler.handleError(error, {
+          additionalData: {
+            operation: 'process_uncaught_exception',
+            intercepted: true
+          }
+        });
+        console.warn('🛡️  Intercepted ElementHandle exception, server continuing...');
+        return; // Don't exit the process
+      }
+      
+      // For other uncaught exceptions, log and let the process handle it normally
+      globalErrorHandler.handleError(error, {
+        additionalData: {
+          operation: 'process_uncaught_exception'
+        }
+      });
+      
+      // Re-throw non-ElementHandle errors to maintain normal error handling
+      throw error;
+    };
+
+    const handleUnhandledRejection = (reason: any, promise: Promise<any>) => {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      
+      if (error.message.includes('ElementHandle can only be created from FrameDispatcher')) {
+        globalErrorHandler.handleError(error, {
+          additionalData: {
+            operation: 'process_unhandled_rejection',
+            intercepted: true
+          }
+        });
+        console.warn('🛡️  Intercepted ElementHandle rejection, server continuing...');
+        return; // Don't crash the process
+      }
+      
+      // For other unhandled rejections, log them
+      globalErrorHandler.handleError(error, {
+        additionalData: {
+          operation: 'process_unhandled_rejection'
+        }
+      });
+    };
+
+    // Only add the listeners if they haven't been added already
+    if (!process.listenerCount('uncaughtException')) {
+      process.on('uncaughtException', handleUncaughtException);
+    }
+    
+    if (!process.listenerCount('unhandledRejection')) {
+      process.on('unhandledRejection', handleUnhandledRejection);
+    }
+
+    // Set up browser context error monitoring
+    try {
+      // Monitor for page crashes and errors
+      browserContext.on('page', (page) => {
+        page.on('pageerror', (error) => {
+          if (error.message.includes('ElementHandle can only be created from FrameDispatcher')) {
+            globalErrorHandler.handleError(error, {
+              url: page.url(),
+              additionalData: {
+                operation: 'page_error',
+                intercepted: true
+              }
+            });
+            console.warn('🛡️  Intercepted ElementHandle page error, continuing...');
+          } else {
+            globalErrorHandler.handleError(error, {
+              url: page.url(),
+              additionalData: {
+                operation: 'page_error'
+              }
+            });
+          }
+        });
+      });
+    } catch (error) {
+      console.warn('Failed to set up page error monitoring:', error);
+    }
   }
 
   private async _createBrowserContext(): Promise<BrowserContextAndBrowser> {
