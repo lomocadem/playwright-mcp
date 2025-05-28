@@ -25,6 +25,8 @@ import { callOnPageNoTrace, waitForCompletion } from './tools/utils.js';
 import { ManualPromise } from './manualPromise.js';
 import { Tab } from './tab.js';
 import { outputFile } from './config.js';
+import { TokenTracker } from './tokenTracker.js';
+import { ResponseManager } from './responseManager.js';
 
 import type { ImageContent, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import type { ModalState, Tool, ToolActionResult } from './tools/tool.js';
@@ -48,11 +50,15 @@ export class Context {
   private _modalStates: (ModalState & { tab: Tab })[] = [];
   private _pendingAction: PendingAction | undefined;
   private _downloads: { download: playwright.Download, finished: boolean, outputFile: string }[] = [];
+  private _tokenTracker: TokenTracker;
+  private _responseManager: ResponseManager;
   clientVersion: { name: string; version: string; } | undefined;
 
   constructor(tools: Tool[], config: FullConfig) {
     this.tools = tools;
     this.config = config;
+    this._tokenTracker = new TokenTracker();
+    this._responseManager = new ResponseManager(config);
   }
 
   clientSupportsImages(): boolean {
@@ -136,21 +142,55 @@ export class Context {
   }
 
   async run(tool: Tool, params: Record<string, unknown> | undefined) {
+    // Prepare input data for token tracking
+    const inputData = {
+      toolName: tool.schema.name,
+      params: params || {}
+    };
+
     // Tab management is done outside of the action() call.
     const toolResult = await tool.handle(this, tool.schema.inputSchema.parse(params || {}));
     const { code, action, waitForNetwork, captureSnapshot, resultOverride } = toolResult;
     const racingAction = action ? () => this._raceAgainstModalDialogs(action) : undefined;
 
-    if (resultOverride)
+    if (resultOverride) {
+      // Track tokens for early return if enabled
+      if (this.config.tokenTracking?.enabled) {
+        const tokenUsage = this._tokenTracker.trackAction(inputData, resultOverride);
+        const tokenReport = this._tokenTracker.formatUsageReport(tokenUsage);
+        
+        // Add token usage to the result
+        if (resultOverride.content && resultOverride.content.length > 0) {
+          const lastContent = resultOverride.content[resultOverride.content.length - 1];
+          if (lastContent.type === 'text') {
+            lastContent.text += '\n\n' + tokenReport;
+          } else {
+            resultOverride.content.push({
+              type: 'text' as const,
+              text: tokenReport
+            });
+          }
+        }
+      }
       return resultOverride;
+    }
 
     if (!this._currentTab) {
-      return {
+      const errorResponse = {
         content: [{
-          type: 'text',
+          type: 'text' as const,
           text: 'No open pages available. Use the "browser_navigate" tool to navigate to a page first.',
         }],
       };
+
+      // Track tokens for error response if enabled
+      if (this.config.tokenTracking?.enabled) {
+        const tokenUsage = this._tokenTracker.trackAction(inputData, errorResponse);
+        const tokenReport = this._tokenTracker.formatUsageReport(tokenUsage);
+        errorResponse.content[0].text += '\n\n' + tokenReport;
+      }
+
+      return errorResponse;
     }
 
     const tab = this.currentTabOrDie();
@@ -175,12 +215,21 @@ ${code.join('\n')}
 
     if (this.modalStates().length) {
       result.push(...this.modalStatesMarkdown());
-      return {
+      const modalResponse = {
         content: [{
-          type: 'text',
+          type: 'text' as const,
           text: result.join('\n'),
         }],
       };
+
+      // Track tokens for modal state response if enabled
+      if (this.config.tokenTracking?.enabled) {
+        const tokenUsage = this._tokenTracker.trackAction(inputData, modalResponse);
+        const tokenReport = this._tokenTracker.formatUsageReport(tokenUsage);
+        modalResponse.content[0].text += '\n\n' + tokenReport;
+      }
+
+      return modalResponse;
     }
 
     if (this._downloads.length) {
@@ -209,16 +258,64 @@ ${code.join('\n')}
       result.push(tab.snapshotOrDie().text());
 
     const content = actionResult?.content ?? [];
-
-    return {
+    const finalResponse = {
       content: [
         ...content,
         {
-          type: 'text',
+          type: 'text' as const,
           text: result.join('\n'),
         }
-      ],
+      ] as (ImageContent | TextContent)[],
     };
+
+    // Process response for size management (save to files, truncate, etc.)
+    const managedResponse = await this._responseManager.processResponse(finalResponse.content);
+    
+    // Add response management info if files were saved or content was truncated
+    if (managedResponse.savedFiles?.length || managedResponse.truncated) {
+      const managementInfo: string[] = [];
+      
+      if (managedResponse.truncated) {
+        managementInfo.push(`📄 **Response Management**: Large response (${managedResponse.originalSize?.toLocaleString()} chars) was processed`);
+      }
+      
+      if (managedResponse.savedFiles?.length) {
+        managementInfo.push(`💾 **Files Saved**: ${managedResponse.savedFiles.length} file(s) saved to output directory`);
+        managedResponse.savedFiles.forEach(file => {
+          managementInfo.push(`   - ${path.basename(file)}`);
+        });
+      }
+      
+      // Add management info to the response
+      const lastContent = managedResponse.content[managedResponse.content.length - 1];
+      if (lastContent.type === 'text') {
+        lastContent.text += '\n\n' + managementInfo.join('\n');
+      } else {
+        managedResponse.content.push({
+          type: 'text' as const,
+          text: managementInfo.join('\n')
+        });
+      }
+    }
+
+    // Track tokens for final response if enabled
+    if (this.config.tokenTracking?.enabled) {
+      const tokenUsage = this._tokenTracker.trackAction(inputData, { content: managedResponse.content });
+      const tokenReport = this._tokenTracker.formatUsageReport(tokenUsage);
+      
+      // Add token usage to the last text content
+      const lastContent = managedResponse.content[managedResponse.content.length - 1];
+      if (lastContent.type === 'text') {
+        lastContent.text += '\n\n' + tokenReport;
+      } else {
+        managedResponse.content.push({
+          type: 'text' as const,
+          text: tokenReport
+        });
+      }
+    }
+
+    return { content: managedResponse.content };
   }
 
   async waitForTimeout(time: number) {

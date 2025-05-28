@@ -18,6 +18,7 @@ import { program } from 'commander';
 
 import { startHttpTransport, startStdioTransport } from './transport.js';
 import { resolveCLIConfig } from './config.js';
+import { initializeDatabaseManager } from './database.js';
 // @ts-ignore
 import { startTraceViewerServer } from 'playwright-core/lib/server';
 
@@ -41,13 +42,17 @@ program
     .option('--ignore-https-errors', 'ignore https errors')
     .option('--isolated', 'keep the browser profile in memory, do not save it to disk.')
     .option('--image-responses <mode>', 'whether to send image responses to the client. Can be "allow", "omit", or "auto". Defaults to "auto", which sends images if the client can display them.')
+    .option('--max-response-size <size>', 'maximum response size in characters before saving to file (default: 10000)', parseInt)
     .option('--no-sandbox', 'disable the sandbox for all process types that are normally sandboxed.')
     .option('--output-dir <path>', 'path to the directory for output files.')
     .option('--port <port>', 'port to listen on for SSE transport.')
     .option('--proxy-bypass <bypass>', 'comma-separated domains to bypass proxy, for example ".com,chromium.org,.domain.com"')
     .option('--proxy-server <proxy>', 'specify proxy server, for example "http://myproxy:3128" or "socks5://myproxy:8080"')
+    .option('--save-responses', 'automatically save large responses to files instead of including in conversation.')
     .option('--save-trace', 'Whether to save the Playwright Trace of the session into the output directory.')
+    .option('--show-tokens', 'Enable token tracking and display input/output token usage after each action.')
     .option('--storage-state <path>', 'path to the storage state file for isolated sessions.')
+    .option('--truncate-responses', 'truncate large responses in conversation (use with --save-responses).')
     .option('--user-agent <ua string>', 'specify user agent string')
     .option('--user-data-dir <path>', 'path to the user data directory. If not specified, a temporary directory will be created.')
     .option('--viewport-size <size>', 'specify browser viewport size in pixels, for example "1280, 720"')
@@ -56,6 +61,17 @@ program
       const config = await resolveCLIConfig(options);
       const connectionList: Connection[] = [];
       setupExitWatchdog(connectionList);
+
+      // Initialize database manager for intelligent crawling
+      try {
+        const dbManager = initializeDatabaseManager(config);
+        await dbManager.connect();
+        await dbManager.initializeDatabase();
+        console.error('Database initialized successfully for intelligent crawling');
+      } catch (error) {
+        console.error('Warning: Failed to initialize database for intelligent crawling:', error);
+        console.error('Intelligent crawling features will not be available');
+      }
 
       if (options.port)
         startHttpTransport(config, +options.port, options.host, connectionList);

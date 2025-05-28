@@ -20,9 +20,11 @@ import dialogs from './tools/dialogs.js';
 import extraction from './tools/extraction.js';
 import files from './tools/files.js';
 import install from './tools/install.js';
+import intelligentCrawler from './tools/intelligent-crawler.js';
 import keyboard from './tools/keyboard.js';
 import navigate from './tools/navigate.js';
 import network from './tools/network.js';
+import pagination from './tools/pagination.js';
 import pdf from './tools/pdf.js';
 import snapshot from './tools/snapshot.js';
 import tabs from './tools/tabs.js';
@@ -40,9 +42,11 @@ export const snapshotTools: Tool<any>[] = [
   ...extraction,
   ...files(true),
   ...install,
+  ...intelligentCrawler,
   ...keyboard(true),
   ...navigate(true),
   ...network,
+  ...pagination,
   ...pdf,
   ...screenshot,
   ...snapshot,
@@ -58,9 +62,11 @@ export const visionTools: Tool<any>[] = [
   ...extraction,
   ...files(false),
   ...install,
+  ...intelligentCrawler,
   ...keyboard(false),
   ...navigate(false),
   ...network,
+  ...pagination,
   ...pdf,
   ...tabs(false),
   ...testing,

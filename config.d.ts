@@ -120,4 +120,65 @@ export type Config = {
    * Whether to send image responses to the client. Can be "allow", "omit", or "auto". Defaults to "auto", which sends images if the client can display them.
    */
   imageResponses?: 'allow' | 'omit' | 'auto';
+
+  /**
+   * Token tracking configuration.
+   */
+  tokenTracking?: {
+    /**
+     * Whether to enable token tracking and display token usage after each action.
+     */
+    enabled?: boolean;
+
+    /**
+     * Whether to show detailed token breakdown in responses.
+     */
+    showDetails?: boolean;
+  };
+
+  /**
+   * Response management configuration.
+   */
+  responseManagement?: {
+    /**
+     * Maximum response size in characters before saving to file.
+     */
+    maxResponseSize?: number;
+
+    /**
+     * Whether to automatically save large responses to files.
+     */
+    saveToFiles?: boolean;
+
+    /**
+     * Whether to truncate large responses in conversation.
+     */
+    truncateLargeResponses?: boolean;
+  };
+
+  /**
+   * Database configuration for intelligent crawling.
+   */
+  database?: {
+    /**
+     * Redis configuration for caching and temporary storage.
+     */
+    redis?: {
+      host?: string;
+      port?: number;
+      password?: string;
+      db?: number;
+    };
+
+    /**
+     * PostgreSQL configuration for persistent storage.
+     */
+    postgres?: {
+      host?: string;
+      port?: number;
+      database?: string;
+      user?: string;
+      password?: string;
+    };
+  };
 };

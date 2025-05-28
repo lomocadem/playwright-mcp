@@ -6,3 +6,19 @@ playwright-report/
 
 .idea
 .DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.production
+
+# Docker volumes and data
+docker-data/
+postgres-data/
+redis-data/
+
+# Output directories
+output/
+traces/
+screenshots/

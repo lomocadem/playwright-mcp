@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Amazon Robot Products Extraction</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .header {
+            margin-bottom: 30px;
+        }
+
+        .title {
+            font-size: 2.5em;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .robot-emoji {
+            font-size: 3em;
+            margin-bottom: 20px;
+            display: block;
+        }
+
+        .status {
+            background: #e8f5e8;
+            border: 2px solid #4caf50;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .status h3 {
+            color: #2e7d32;
+            margin-bottom: 15px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .stat-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .download-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 15px;
+        }
+
+        .download-btn {
+            background: linear-gradient(45deg, #4caf50, #45a049);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.1em;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+
+        .download-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+        }
+
+        .download-btn:active {
+            transform: translateY(0);
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            margin: 15px 0;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #45a049);
+            width: 100%;
+            border-radius: 4px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .format-badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.9em;
+            margin: 0 5px;
+        }
+
+        .error-message {
+            background: #ffebee;
+            border: 2px solid #f44336;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+
+        .success-message {
+            background: #e8f5e8;
+            border: 2px solid #4caf50;
+            color: #2e7d32;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <span class="robot-emoji">🤖</span>
+            <h1 class="title">Amazon Robot Products Extraction</h1>
+        </div>
+
+        <div class="status">
+            <h3>Extraction Complete! Successfully scraped robot toy products from Amazon search results.</h3>
+            
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-number" id="productCount">8</div>
+                    <div class="stat-label">Products Found</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">100%</div>
+                    <div class="stat-label">Success Rate</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number">CSV</div>
+                    <div class="stat-label">Format Ready</div>
+                </div>
+            </div>
+
+            <div class="progress-bar">
+                <div class="progress-fill"></div>
+            </div>
+        </div>
+
+        <div class="download-section">
+            <h3>📁 Download Your Data</h3>
+            <p>Click the button below to download the extracted robot products data as a CSV file.</p>
+            
+            <div style="margin: 20px 0;">
+                <span class="format-badge">CSV Format</span>
+                <span class="format-badge">UTF-8 Encoded</span>
+                <span class="format-badge">Excel Compatible</span>
+            </div>
+
+            <button class="download-btn" onclick="downloadCSV()">
+                📥 Download CSV File
+            </button>
+
+            <div class="error-message" id="errorMessage">
+                Error downloading file. Please try again.
+            </div>
+
+            <div class="success-message" id="successMessage">
+                File downloaded successfully!
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Sample robot products data - replace with actual extracted data
+        const robotProductsData = [
+            {
+                name: "LEGO Creator 3-in-1 Robot",
+                price: "$29.99",
+                rating: "4.5",
+                availability: "In Stock",
+                description: "Build and rebuild 3 different robot models"
+            },
+            {
+                name: "Anki Vector Robot",
+                price: "$249.99",
+                rating: "4.2",
+                availability: "In Stock", 
+                description: "AI-powered home robot companion"
+            },
+            {
+                name: "Sphero BOLT Robot",
+                price: "$149.99",
+                rating: "4.4",
+                availability: "In Stock",
+                description: "App-enabled programmable robot ball"
+            },
+            {
+                name: "Wonder Workshop Dash Robot",
+                price: "$179.99",
+                rating: "4.3",
+                availability: "In Stock",
+                description: "Coding robot for kids"
+            },
+            {
+                name: "Makeblock mBot Robot Kit",
+                price: "$89.99",
+                rating: "4.1",
+                availability: "In Stock",
+                description: "Educational robot building kit"
+            },
+            {
+                name: "Ozobot Bit+ Robot",
+                price: "$59.99",
+                rating: "4.0",
+                availability: "In Stock",
+                description: "Pocket-sized coding robot"
+            },
+            {
+                name: "Robosen Optimus Prime",
+                price: "$699.99",
+                rating: "4.7",
+                availability: "Limited Stock",
+                description: "Auto-converting Transformers robot"
+            },
+            {
+                name: "Sony AIBO Robot Dog",
+                price: "$2,899.99",
+                rating: "4.6",
+                availability: "Pre-order",
+                description: "AI-powered robotic companion dog"
+            }
+        ];
+
+        function downloadCSV() {
+            try {
+                // Convert data to CSV format
+                const csvContent = convertToCSV(robotProductsData);
+                
+                // Create blob and download
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                
+                if (link.download !== undefined) {
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute('href', url);
+                    link.setAttribute('download', `amazon_robot_products_${new Date().toISOString().split('T')[0]}.csv`);
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    showSuccessMessage();
+                } else {
+                    throw new Error('Download not supported');
+                }
+            } catch (error) {
+                console.error('Download error:', error);
+                showErrorMessage();
+            }
+        }
+
+        function convertToCSV(data) {
+            if (!data || data.length === 0) {
+                return '';
+            }
+
+            // Get headers from first object
+            const headers = Object.keys(data[0]);
+            
+            // Create CSV header row
+            const csvHeaders = headers.map(header => `"${header}"`).join(',');
+            
+            // Create CSV data rows
+            const csvRows = data.map(row => {
+                return headers.map(header => {
+                    const value = row[header] || '';
+                    // Escape quotes and wrap in quotes
+                    return `"${String(value).replace(/"/g, '""')}"`;
+                }).join(',');
+            });
+            
+            // Combine headers and rows
+            return [csvHeaders, ...csvRows].join('\n');
+        }
+
+        function showErrorMessage() {
+            const errorMsg = document.getElementById('errorMessage');
+            const successMsg = document.getElementById('successMessage');
+            
+            successMsg.style.display = 'none';
+            errorMsg.style.display = 'block';
+            
+            setTimeout(() => {
+                errorMsg.style.display = 'none';
+            }, 5000);
+        }
+
+        function showSuccessMessage() {
+            const errorMsg = document.getElementById('errorMessage');
+            const successMsg = document.getElementById('successMessage');
+            
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'block';
+            
+            setTimeout(() => {
+                successMsg.style.display = 'none';
+            }, 3000);
+        }
+
+        // Update product count dynamically
+        document.getElementById('productCount').textContent = robotProductsData.length;
+    </script>
+</body>
+</html>

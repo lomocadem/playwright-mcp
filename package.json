@@ -36,8 +36,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",
+    "@types/pg": "^8.15.2",
+    "@types/redis": "^4.0.10",
     "commander": "^13.1.0",
+    "dotenv": "^16.5.0",
+    "pg": "^8.16.0",
     "playwright": "1.53.0-alpha-2025-05-27",
+    "redis": "^5.1.0",
     "zod": "^3.25.32",
     "zod-to-json-schema": "^3.24.4"
   },

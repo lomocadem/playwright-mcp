@@ -39,13 +39,17 @@ export type CLIOptions = {
   ignoreHttpsErrors?: boolean;
   isolated?: boolean;
   imageResponses?: 'allow' | 'omit' | 'auto';
+  maxResponseSize?: number;
   sandbox: boolean;
   outputDir?: string;
   port?: number;
   proxyBypass?: string;
   proxyServer?: string;
+  saveResponses?: boolean;
   saveTrace?: boolean;
+  showTokens?: boolean;
   storageState?: string;
+  truncateResponses?: boolean;
   userAgent?: string;
   userDataDir?: string;
   viewportSize?: string;
@@ -68,6 +72,21 @@ const defaultConfig: FullConfig = {
     allowedOrigins: undefined,
     blockedOrigins: undefined,
   },
+  database: {
+    redis: {
+      host: process.env.REDIS_HOST || 'localhost',
+      port: parseInt(process.env.REDIS_PORT || '6379'),
+      password: process.env.REDIS_PASSWORD,
+      db: parseInt(process.env.REDIS_DB || '0'),
+    },
+    postgres: {
+      host: process.env.POSTGRES_HOST || 'localhost',
+      port: parseInt(process.env.POSTGRES_PORT || '5432'),
+      database: process.env.POSTGRES_DB || 'playwright_mcp',
+      user: process.env.POSTGRES_USER || 'postgres',
+      password: process.env.POSTGRES_PASSWORD || 'postgres',
+    },
+  },
   outputDir: path.join(os.tmpdir(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
 };
 
@@ -80,6 +99,7 @@ export type FullConfig = Config & {
     contextOptions: NonNullable<BrowserUserConfig['contextOptions']>;
   },
   network: NonNullable<Config['network']>,
+  database: NonNullable<Config['database']>,
   outputDir: string;
 };
 
@@ -189,6 +209,15 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
     saveTrace: cliOptions.saveTrace,
     outputDir: cliOptions.outputDir,
     imageResponses: cliOptions.imageResponses,
+    tokenTracking: {
+      enabled: !!cliOptions.showTokens,
+      showDetails: true,
+    },
+    responseManagement: {
+      maxResponseSize: cliOptions.maxResponseSize || 10000,
+      saveToFiles: !!cliOptions.saveResponses,
+      truncateLargeResponses: !!cliOptions.truncateResponses,
+    },
   };
 
   return result;
@@ -256,6 +285,10 @@ function mergeConfig(base: FullConfig, overrides: Config): FullConfig {
     network: {
       ...pickDefined(base.network),
       ...pickDefined(overrides.network),
+    },
+    database: {
+      ...pickDefined(base.database),
+      ...pickDefined(overrides.database),
     }
   } as FullConfig;
 }

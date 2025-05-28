@@ -19,6 +19,42 @@ Replace your current Playwright MCP configuration in Claude Desktop with:
 }
 ```
 
+## 🆕 Token Tracking Setup
+
+To enable token tracking that shows input/output tokens after each action:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "node",
+      "args": [
+        "/Users/calvin/Documents/playwright-mcp/cli.js",
+        "--show-tokens"
+      ]
+    }
+  }
+}
+```
+
+### What Token Tracking Provides:
+- **Real-time token usage** for each action
+- **Session totals** to track cumulative usage
+- **Automatic warnings** when approaching token limits
+- **Conversation length awareness** to prevent hitting max limits
+
+### Example Token Output:
+```
+### Token Usage
+- Input tokens (this action): 45
+- Output tokens (this action): 123
+- Total tokens (this action): 168
+
+- Session input tokens: 1,234
+- Session output tokens: 5,678
+- Session total tokens: 6,912
+```
+
 ## What's New
 
 ### 🎯 New Tool: `browser_extract_data`
